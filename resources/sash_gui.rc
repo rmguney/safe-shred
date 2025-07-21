@@ -1,0 +1,65 @@
+#include <windows.h>
+#include <commctrl.h>
+
+// Application icon - must be resource ID 1 for taskbar display
+1 ICON "sash.ico"
+
+#define IDD_MAIN       100
+#define IDC_LISTBOX    1001
+#define IDC_ADD        1002
+#define IDC_REMOVE     1003
+#define IDC_SHRED      1004
+#define IDC_PROGRESS   1005
+#define IDC_PASSES     1006
+#define IDC_WIPE_FREE  1007
+
+IDD_MAIN DIALOGEX 0, 0, 320, 260
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Safe Shred"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Files to shred:", -1, 7, 7, 50, 8
+    LISTBOX         IDC_LISTBOX, 7, 20, 306, 120, LBS_SORT | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Add...", IDC_ADD, 7, 145, 50, 14
+    PUSHBUTTON      "&Remove", IDC_REMOVE, 62, 145, 50, 14
+    LTEXT           "Passes:", -1, 200, 147, 30, 8
+    EDITTEXT        IDC_PASSES, 235, 145, 30, 14, ES_NUMBER
+    PUSHBUTTON      "&Shred", IDC_SHRED, 263, 145, 50, 14
+    PUSHBUTTON      "Wipe &Free Space", IDC_WIPE_FREE, 7, 165, 80, 14
+    CONTROL         "", IDC_PROGRESS, PROGRESS_CLASS, PBS_SMOOTH, 7, 185, 306, 14
+    LTEXT           "Drag && drop files or use Add button", -1, 7, 205, 200, 8
+    LTEXT           "Free space wiping removes data from unallocated disk sectors", -1, 7, 220, 306, 8
+END
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName", "Safe Shred Project"
+            VALUE "FileDescription", "Secure File Deletion Graphical Interface"
+            VALUE "ProductVersion", "0.1"
+            VALUE "InternalName", "sash_gui.exe"
+            VALUE "LegalCopyright", "Copyright (C) 2025 Safe Shred Project. MIT License."
+            VALUE "LegalTrademarks", "Safe Shred"
+            VALUE "OriginalFilename", "sash_gui.exe"
+            VALUE "ProductName", "Safe Shred"
+            VALUE "ProductVersion", "0.1"
+            VALUE "Comments", "Security tool for permanent file deletion. Open source, no network connectivity."
+            VALUE "PrivateBuild", "Community Release"
+            VALUE "SpecialBuild", "GitHub Build"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

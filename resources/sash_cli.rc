@@ -1,0 +1,37 @@
+#include <windows.h>
+
+// Application icon - must be resource ID 1 for taskbar display
+1 ICON "sash.ico"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName", "Safe Shred Project"
+            VALUE "FileDescription", "Secure File Deletion CLI Interface"
+            VALUE "ProductVersion", "0.1"
+            VALUE "InternalName", "sash.exe"
+            VALUE "LegalCopyright", "Copyright (C) 2025 Safe Shred Project. MIT License."
+            VALUE "LegalTrademarks", "Safe Shred"
+            VALUE "OriginalFilename", "sash.exe"
+            VALUE "ProductName", "Safe Shred"
+            VALUE "ProductVersion", "0.1"
+            VALUE "Comments", "Legitimate security tool for permanent file deletion. Open source, no network connectivity."
+            VALUE "PrivateBuild", "Community Release"
+            VALUE "SpecialBuild", "GitHub Build"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

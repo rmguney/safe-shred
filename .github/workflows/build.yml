@@ -1,0 +1,440 @@
+name: Build Safe Shred
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  BUILD_TYPE: Release
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov
+        
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_UNITY_BUILD=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+      
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel ${{env.CMAKE_BUILD_PARALLEL_LEVEL}} --target sash sash_gui
+      
+    - name: Test executables exist
+      run: |
+        if (!(Test-Path "${{github.workspace}}/build/Release/sash.exe")) { 
+          throw "sash.exe not found" 
+        }
+        if (!(Test-Path "${{github.workspace}}/build/Release/sash_gui.exe")) { 
+          throw "sash_gui.exe not found" 
+        }
+        Write-Host "Both executables built successfully"
+      shell: pwsh
+      
+    - name: Check executable sizes
+      run: |
+        $cli_size = (Get-Item "${{github.workspace}}/build/Release/sash.exe").Length / 1KB
+        $gui_size = (Get-Item "${{github.workspace}}/build/Release/sash_gui.exe").Length / 1KB
+        Write-Host "CLI size: $([math]::Round($cli_size, 1)) KB (limit: 200 KB)"
+        Write-Host "GUI size: $([math]::Round($gui_size, 1)) KB (limit: 300 KB)"
+        if ($cli_size -gt 200) { throw "CLI executable too large: $cli_size KB > 200 KB" }
+        if ($gui_size -gt 300) { throw "GUI executable too large: $gui_size KB > 300 KB" }
+        Write-Host "Size requirements met"
+      shell: pwsh
+      
+    - name: Test CLI functionality
+      run: |
+        # Set console encoding to handle Unicode output
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        
+        # Test help output
+        $output = & "${{github.workspace}}/build/Release/sash.exe" 2>&1 | Out-String
+        Write-Host "Exit code: $LASTEXITCODE"
+        Write-Host "Raw output length: $($output.Length)"
+        Write-Host "Output preview: '$($output.Substring(0, [Math]::Min(100, $output.Length)))...'"
+        
+        if ($LASTEXITCODE -eq 0) { throw "Expected non-zero exit code for help, got: $LASTEXITCODE" }
+        if ($output -notmatch "Usage") { 
+          Write-Host "Full output for debugging: '$output'"
+          throw "Help output missing 'Usage' text" 
+        }
+        Write-Host "CLI help works"
+        
+        # Test file shredding
+        "test content" | Out-File -FilePath "test.txt" -Encoding UTF8
+        & "${{github.workspace}}/build/Release/sash.exe" "test.txt"
+        if (Test-Path "test.txt") { throw "File was not shredded" }
+        Write-Host "File shredding works"
+      shell: pwsh
+      
+    - name: Run Python tests
+      run: |
+        cd tests
+        python -m pytest test_shred.py -v
+      shell: pwsh
+      
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: safe-shred-windows-x64
+        path: |
+          ${{github.workspace}}/build/Release/sash.exe
+          ${{github.workspace}}/build/Release/sash_gui.exe
+          ${{github.workspace}}/resources/install.bat
+          ${{github.workspace}}/resources/uninstall.bat
+          ${{github.workspace}}/README.md
+        retention-days: 30
+
+  build-analysis:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    needs: build-windows
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install analysis tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov bandit safety
+        
+    - name: Run tests with coverage (fast)
+      run: |
+        cd tests
+        python -m pytest test_shred.py --maxfail=1 -x
+      shell: pwsh
+      continue-on-error: true
+      
+    - name: Security scan (fast)
+      run: |
+        # Quick security scan
+        python -m bandit -r tests/ -f txt || true
+        python -m safety check --short-report || true
+      shell: pwsh
+      continue-on-error: true
+
+  auto-release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [build-windows]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+      
+    - name: Calculate version
+      id: version
+      run: |
+        $commit_count = git rev-list --count HEAD
+        $version = "v0.$commit_count"
+        Write-Host "Calculated version: $version"
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "COMMIT_COUNT=$commit_count" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+      
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_UNITY_BUILD=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+      
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel ${{env.CMAKE_BUILD_PARALLEL_LEVEL}} --target sash sash_gui
+      
+    - name: Create complete installation package
+      run: |
+        $version = "${{ steps.version.outputs.VERSION }}"
+        $package_name = "safe-shred-$version"
+        
+        # Create package directory
+        New-Item -ItemType Directory -Path $package_name -Force
+        
+        # Copy all components
+        Copy-Item "${{github.workspace}}/build/Release/sash.exe" $package_name/
+        Copy-Item "${{github.workspace}}/build/Release/sash_gui.exe" $package_name/
+        Copy-Item "${{github.workspace}}/resources/install.bat" $package_name/
+        Copy-Item "${{github.workspace}}/resources/uninstall.bat" $package_name/
+        Copy-Item "${{github.workspace}}/README.md" $package_name/
+        
+        # Create complete ZIP package
+        Compress-Archive -Path $package_name -DestinationPath "$package_name.zip" -Force
+        
+        # Verify contents
+        Write-Host "Package contents:"
+        Get-ChildItem $package_name | ForEach-Object { Write-Host "  $($_.Name)" }
+        
+        # Check ZIP file size and executables
+        $zipSize = (Get-Item "$package_name.zip").Length / 1MB
+        $cliSize = (Get-Item "$package_name/sash.exe").Length / 1KB
+        $guiSize = (Get-Item "$package_name/sash_gui.exe").Length / 1KB
+        
+        Write-Host "Package size: $([math]::Round($zipSize, 2)) MB"
+        Write-Host "CLI executable: $([math]::Round($cliSize, 1)) KB"
+        Write-Host "GUI executable: $([math]::Round($guiSize, 1)) KB"
+        
+        if ($zipSize -gt 5) { 
+          Write-Warning "Package larger than expected: $zipSize MB" 
+        }
+        
+        Write-Host "Complete installation package created successfully"
+      shell: pwsh
+      
+    - name: Create or Update Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        name: "Safe Shred ${{ steps.version.outputs.VERSION }}"
+        files: |
+          ${{github.workspace}}/safe-shred-${{ steps.version.outputs.VERSION }}.zip
+        body: |
+          ## Safe Shred (sash) ${{ steps.version.outputs.VERSION }}
+          
+          A secure file deletion utility to protect sensitive data from recovery, for Windows with CLI, GUI, and context menu interfaces.
+
+          ## Features
+
+          ### Core Security
+
+          - **Secure multi-pass overwriting** (default: 3 passes with 0x00, 0xFF, and cryptographically secure random data)
+          - **Metadata wiping** (filename randomization, timestamp clearing, MFT entry corruption)
+          - **Write-through mode** ensures data reaches physical disk storage
+          - **No Recycle Bin** - files are permanently destroyed
+
+          ### Advanced Capabilities
+
+          - **SSD Support** with TRIM command integration for modern storage
+          - **Free space wiping** removes traces from unallocated disk sectors
+          - **System file protection** prevents accidental deletion of critical OS files
+          - **Batch processing** with wildcard pattern support (*.txt, file?.doc)
+          - **Shell integration** with right-click context menu
+
+          ### Utilities
+
+          - **Dual interfaces** - command-line for automation, GUI for ease of use
+          - **Real-time progress** reporting with detailed logging
+          - **Drag-and-drop** support in GUI interface
+          - **Comprehensive error handling** and validation
+
+          ## Quick Start
+
+          ### Download
+
+          Download the latest release from GitHub releases or build from source.
+
+          **Complete Package Includes:**
+
+          - `sash.exe` - Command-line interface (~185 KB)
+          - `sash_gui.exe` - Graphical interface (~183 KB)
+          - `install.bat` - Automated installer script
+          - `uninstall.bat` - Removal script
+
+          ### Installation
+
+          1. **Download & Extract**: Extract the complete ZIP package to a folder
+          2. **Add Antivirus Exclusion**: Add the folder to Windows Defender exclusions (Settings → Update & Security → Windows Security → Virus & threat protection → Exclusions)
+          3. **Install**: Right-click `install.bat` and select "Run as administrator"
+          4. **Use**: Right-click any file → "Safe Shred" or launch `sash_gui.exe`
+
+          ### Portable Use
+
+          For portable operation without installation:
+
+          - Extract ZIP to any folder
+          - Run `sash.exe` or `sash_gui.exe` directly
+          - No registry changes or system integration
+
+          ## Usage
+
+          ### CLI
+
+          ```bash
+          # Basic file shredding
+          sash.exe document.txt
+
+          # Multiple files and wildcards
+          sash.exe file1.txt file2.bin *.log
+
+          # Custom pass count (1-35 passes supported)
+          sash.exe sensitive.dat -p 7
+
+          # Read file list from text file
+          sash.exe @filelist.txt
+
+          # Force shredding system files (just dont)
+          sash.exe system.dll --force
+
+          # Wipe free space on entire drive
+          sash.exe --wipe-free C:\
+          ```
+
+          **CLI Options:**
+
+          - `-p N` - Number of overwrite passes (default: 3)
+          - `--force` - Allow shredding system files
+          - `--wipe-free` - Wipe free space on drive
+          - `@file` - Read file list from file
+
+          ### GUI
+
+          1. Launch `sash_gui.exe`
+          2. **Add files**: Drag-and-drop or use "Add..." button
+          3. **Configure**: Set number of passes (1-35, default: 3)
+          4. **Execute**: Click "Shred" to delete files or "Wipe Free Space" for drive cleaning
+          5. **Monitor**: Watch real-time progress and detailed logging
+
+          ## Shell Integration
+
+          ### Automated Installation
+
+          The `install.bat` script provides:
+
+          - Copies executables to `C:\Program Files\SafeShred\`
+          - Adds context menu integration via registry
+          - Adds SafeShred to system PATH
+          - Includes application icon in context menus
+
+          ### Context Menu Usage
+
+          After installation:
+
+          - **Right-click any file** → "Safe Shred"
+          - **Right-click in empty folder** → "Wipe Free Space"
+
+          ### Uninstall
+
+          Run `uninstall.bat` as administrator to completely remove Safe Shred from your system.
+
+          ## Security Implementation
+
+          ### Overwrite Process
+
+          1. **Pass 1**: Fill with 0x00 (zeros)
+          2. **Pass 2**: Fill with 0xFF (ones)  
+          3. **Pass 3**: Fill with cryptographically secure random data (CryptGenRandom)
+
+          ### Metadata Destruction
+
+          - **Filename randomization**: Multiple rename cycles with random names
+          - **Timestamp clearing**: Creation, modification, and access times zeroed
+          - **MFT corruption**: On SSDs with TRIM support, corrupts Master File Table entries
+
+          ### Advanced Protection
+
+          - **Write-through mode**: FILE_FLAG_WRITE_THROUGH ensures data reaches physical storage
+          - **Compression disabled**: FILE_FLAG_NO_BUFFERING prevents OS caching
+          - **Free space wiping**: Overwrites unallocated disk sectors to remove file traces
+          - **TRIM support**: Notifies SSD controllers to mark blocks as unused
+          - **System protection**: Prevents deletion of critical Windows files
+
+          ### Verification
+
+          - File existence checked after each operation
+          - Write operations verified for completion
+          - Error handling for locked or protected files
+          - Comprehensive logging of all operations
+
+          ## Security Limitations
+
+          **Important Security Considerations:**
+
+          - **SSDs**: Modern SSDs with wear leveling may retain data in spare blocks
+          - **Journaling**: NTFS journaling may keep temporary copies
+          - **Hibernation/Paging**: System swap files may contain traces
+          - **RAM**: Data may persist in memory after deletion
+          - **Backups**: Cloud sync and backup services may have copies
+
+          **For maximum security**: Use full disk encryption and secure disk wiping tools for entire drives.
+
+          ## License
+
+          This project is released under the MIT License. See LICENSE file for details.
+          
+        draft: false
+        prerelease: false
+        make_latest: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [build-windows]
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup MSBuild (cached)
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_UNITY_BUILD=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+      
+    - name: Build (parallel, targets only)
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel ${{env.CMAKE_BUILD_PARALLEL_LEVEL}} --target sash sash_gui
+      
+    - name: Create release package
+      run: |
+        $version = "${{ github.event.release.tag_name }}"
+        $package_name = "safe-shred-$version-complete"
+        
+        # Create package directory
+        New-Item -ItemType Directory -Path $package_name -Force
+        
+        # Copy all components
+        Copy-Item "${{github.workspace}}/build/Release/sash.exe" $package_name/
+        Copy-Item "${{github.workspace}}/build/Release/sash_gui.exe" $package_name/
+        Copy-Item "${{github.workspace}}/resources/install.bat" $package_name/
+        Copy-Item "${{github.workspace}}/resources/uninstall.bat" $package_name/
+        Copy-Item "${{github.workspace}}/README.md" $package_name/
+        
+        # Create complete ZIP package
+        Compress-Archive -Path $package_name -DestinationPath "$package_name.zip" -Force
+        
+        # Verify contents and show package info
+        Write-Host "Package contents:"
+        Get-ChildItem $package_name | ForEach-Object { Write-Host "  $($_.Name)" }
+        
+        $zipSize = (Get-Item "$package_name.zip").Length / 1MB
+        Write-Host "Complete package size: $([math]::Round($zipSize, 2)) MB"
+        Write-Host "Created release package: $package_name.zip"
+      shell: pwsh
+      
+    - name: Upload release asset
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $version = "${{ github.event.release.tag_name }}"
+        $asset_path = "./safe-shred-$version-complete.zip"
+        gh release upload $version $asset_path --clobber
+      shell: pwsh
