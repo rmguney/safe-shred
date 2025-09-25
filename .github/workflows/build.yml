@@ -1,0 +1,191 @@
+name: Build Safe Shred
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  BUILD_TYPE: Release
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_UNITY_BUILD=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+      
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel ${{env.CMAKE_BUILD_PARALLEL_LEVEL}} --target sash sash_gui
+      
+    - name: Test executables exist
+      run: |
+        if (!(Test-Path "${{github.workspace}}/build/Release/sash.exe")) { 
+          throw "sash.exe not found" 
+        }
+        if (!(Test-Path "${{github.workspace}}/build/Release/sash_gui.exe")) { 
+          throw "sash_gui.exe not found" 
+        }
+        Write-Host "Both executables built successfully"
+      shell: pwsh
+      
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: safe-shred-windows-x64
+        path: |
+          ${{github.workspace}}/build/Release/sash.exe
+          ${{github.workspace}}/build/Release/sash_gui.exe
+          ${{github.workspace}}/resources/install.bat
+          ${{github.workspace}}/resources/uninstall.bat
+          ${{github.workspace}}/README.md
+        retention-days: 30
+
+  auto-release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [build-windows]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+      
+    - name: Calculate version
+      id: version
+      run: |
+        $commit_count = git rev-list --count HEAD
+        $version = "v0.$commit_count"
+        Write-Host "Calculated version: $version"
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "COMMIT_COUNT=$commit_count" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+      
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_UNITY_BUILD=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+      
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel ${{env.CMAKE_BUILD_PARALLEL_LEVEL}} --target sash sash_gui
+      
+    - name: Create complete installation package
+      run: |
+        $version = "${{ steps.version.outputs.VERSION }}"
+        $package_name = "safe-shred-$version"
+        
+        # Create package directory
+        New-Item -ItemType Directory -Path $package_name -Force
+        
+        # Copy all components
+        Copy-Item "${{github.workspace}}/build/Release/sash.exe" $package_name/
+        Copy-Item "${{github.workspace}}/build/Release/sash_gui.exe" $package_name/
+        Copy-Item "${{github.workspace}}/resources/install.bat" $package_name/
+        Copy-Item "${{github.workspace}}/resources/uninstall.bat" $package_name/
+        Copy-Item "${{github.workspace}}/README.md" $package_name/
+        
+        # Create complete ZIP package
+        Compress-Archive -Path $package_name -DestinationPath "$package_name.zip" -Force
+        
+        # Verify contents
+        Write-Host "Package contents:"
+        Get-ChildItem $package_name | ForEach-Object { Write-Host "  $($_.Name)" }
+        
+        # Check ZIP file size and executables
+        $zipSize = (Get-Item "$package_name.zip").Length / 1MB
+        $cliSize = (Get-Item "$package_name/sash.exe").Length / 1KB
+        $guiSize = (Get-Item "$package_name/sash_gui.exe").Length / 1KB
+        
+        Write-Host "Package size: $([math]::Round($zipSize, 2)) MB"
+        Write-Host "CLI executable: $([math]::Round($cliSize, 1)) KB"
+        Write-Host "GUI executable: $([math]::Round($guiSize, 1)) KB"
+        
+        if ($zipSize -gt 5) { 
+          Write-Warning "Package larger than expected: $zipSize MB" 
+        }
+        
+        Write-Host "Complete installation package created successfully"
+      shell: pwsh
+      
+    - name: Create or Update Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        name: "Safe Shred ${{ steps.version.outputs.VERSION }}"
+        files: |
+          ${{github.workspace}}/safe-shred-${{ steps.version.outputs.VERSION }}.zip
+        draft: false
+        prerelease: false
+        make_latest: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [build-windows]
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup MSBuild (cached)
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_UNITY_BUILD=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+      
+    - name: Build (parallel, targets only)
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel ${{env.CMAKE_BUILD_PARALLEL_LEVEL}} --target sash sash_gui
+      
+    - name: Create release package
+      run: |
+        $version = "${{ github.event.release.tag_name }}"
+        $package_name = "safe-shred-$version-complete"
+        
+        # Create package directory
+        New-Item -ItemType Directory -Path $package_name -Force
+        
+        # Copy all components
+        Copy-Item "${{github.workspace}}/build/Release/sash.exe" $package_name/
+        Copy-Item "${{github.workspace}}/build/Release/sash_gui.exe" $package_name/
+        Copy-Item "${{github.workspace}}/resources/install.bat" $package_name/
+        Copy-Item "${{github.workspace}}/resources/uninstall.bat" $package_name/
+        Copy-Item "${{github.workspace}}/README.md" $package_name/
+        
+        # Create complete ZIP package
+        Compress-Archive -Path $package_name -DestinationPath "$package_name.zip" -Force
+        
+        # Verify contents and show package info
+        Write-Host "Package contents:"
+        Get-ChildItem $package_name | ForEach-Object { Write-Host "  $($_.Name)" }
+        
+        $zipSize = (Get-Item "$package_name.zip").Length / 1MB
+        Write-Host "Complete package size: $([math]::Round($zipSize, 2)) MB"
+        Write-Host "Created release package: $package_name.zip"
+      shell: pwsh
+      
+    - name: Upload release asset
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $version = "${{ github.event.release.tag_name }}"
+        $asset_path = "./safe-shred-$version-complete.zip"
+        gh release upload $version $asset_path --clobber
+      shell: pwsh
